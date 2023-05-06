@@ -1,25 +1,12 @@
-use anyhow::{Context, Error, Result};
+use anyhow::{Context, Result};
 use config::Config;
-use convert_case::{Case, Casing};
-use notion::ids::{DatabaseId, PageId, PropertyId};
-use notion::models::block::{CreateBlock, FileOrEmojiObject};
+use notion::ids::DatabaseId;
 use notion::models::paging::Pageable;
-use notion::models::properties::{
-    Color, PropertyValue, RelationValue, SelectOptionId, SelectedValue,
-};
-use notion::models::search::{DatabaseQuery, NotionSearch, SearchRequest};
-
-use notion::models::{Page, PageCreateRequest, PageUpdateRequest, Parent, Properties};
+use notion::models::search::{DatabaseQuery, NotionSearch};
 use notion::NotionApi;
-
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
-use serde_json;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::str::FromStr;
-use tracing::Level;
+use std::io::Write;
 
 #[derive(Deserialize, Serialize)]
 struct AutoConfig {
@@ -58,7 +45,7 @@ async fn main() -> Result<()> {
 
 async fn dump_all<Q>(
     api: &NotionApi,
-    mut f: impl FnMut(notion::models::Page) -> (),
+    mut f: impl FnMut(notion::models::Page),
     database: &DatabaseId,
     query: Q,
 ) -> Result<()>
@@ -85,7 +72,8 @@ async fn backup_all(api: &NotionApi) -> Result<()> {
         .await?
         .only_databases();
 
-    std::fs::create_dir_all("output/")?;
+    std::fs::create_dir_all("databases/")?;
+    std::fs::create_dir_all("pages/")?;
 
     for database in databases.results().iter() {
         let title = database.title_plain_text();
@@ -97,11 +85,11 @@ async fn backup_all(api: &NotionApi) -> Result<()> {
 
         {
             let mut output =
-                File::create("output/".to_string() + &database.id.to_string() + ".json")
+                File::create("databases/".to_string() + &database.id.to_string() + ".json")
                     .expect("File open failed!");
 
             let buf: String = serde_json::to_string(&database).expect("JSON serialization failed!");
-            output.write(buf.as_bytes()).expect("Write failed");
+            output.write_all(buf.as_bytes()).expect("Write failed");
         }
 
         dump_all(
@@ -110,11 +98,11 @@ async fn backup_all(api: &NotionApi) -> Result<()> {
                 tracing::info!(id = page.id.to_string(), title = page.title(), "Found Page");
 
                 let mut output =
-                    File::create("output/".to_string() + &page.id.to_string() + ".json")
+                    File::create("pages/".to_string() + &page.id.to_string() + ".json")
                         .expect("File open failed!");
 
                 let buf: String = serde_json::to_string(&page).expect("JSON serialization failed!");
-                output.write(buf.as_bytes()).expect("Write failed");
+                output.write_all(buf.as_bytes()).expect("Write failed");
             },
             &database.id,
             DatabaseQuery {
