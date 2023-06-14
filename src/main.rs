@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use config::Config;
-use notion::ids::DatabaseId;
+use notion::ids::{BlockId, DatabaseId};
 use notion::models::paging::Pageable;
 use notion::models::search::{DatabaseQuery, NotionSearch};
 use notion::NotionApi;
@@ -18,7 +18,7 @@ struct AutoConfig {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     /*let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
+        .with_max_level(tracing::Level::TRACE)
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);*/
 
@@ -43,24 +43,53 @@ async fn main() -> Result<()> {
     backup_all(&notion_api).await
 }
 
-async fn dump_all<Q>(
-    api: &NotionApi,
-    mut f: impl FnMut(notion::models::Page),
-    database: &DatabaseId,
-    query: Q,
-) -> Result<()>
+async fn dump_page(api: &NotionApi, mut page: notion::models::Page) -> Result<()> {
+    tracing::info!(id = page.id.to_string(), title = page.title(), "Found Page");
+
+    let block_id: BlockId = BlockId::from(page.id.clone());
+    if let Ok(blocks) = api.get_block_children(&block_id).await {
+        page.blocks = Some(blocks.results);
+        let mut more = blocks.has_more;
+        let mut next = blocks.next_cursor;
+
+        while more {
+            let blocks = api
+                .get_block_children_with_cursor(&block_id, next.unwrap())
+                .await?;
+            if let Some(v) = &mut page.blocks {
+                v.extend(blocks.results);
+            }
+
+            more = blocks.has_more;
+            next = blocks.next_cursor;
+        }
+    }
+
+    let mut output = File::create("pages/".to_string() + &page.id.to_string() + ".json")?;
+
+    let buf: String = serde_json::to_string(&page)?;
+    output.write_all(buf.as_bytes())?;
+
+    Ok(())
+}
+
+async fn dump_all<Q>(api: &NotionApi, database: &DatabaseId, query: Q) -> Result<()>
 where
     Q: Into<DatabaseQuery>,
 {
     let mut q: DatabaseQuery = query.into();
     let mut pages = api.query_database(database, q.clone()).await?;
-    pages.results.into_iter().for_each(&mut f);
+    for page in pages.results.into_iter() {
+        dump_page(api, page).await?;
+    }
 
     while pages.has_more {
         q = q.start_from(pages.next_cursor);
 
         pages = api.query_database(database, q.clone()).await?;
-        pages.results.into_iter().for_each(&mut f);
+        for page in pages.results.into_iter() {
+            dump_page(api, page).await?;
+        }
     }
 
     Ok(())
@@ -85,25 +114,14 @@ async fn backup_all(api: &NotionApi) -> Result<()> {
 
         {
             let mut output =
-                File::create("databases/".to_string() + &database.id.to_string() + ".json")
-                    .expect("File open failed!");
+                File::create("databases/".to_string() + &database.id.to_string() + ".json")?;
 
-            let buf: String = serde_json::to_string(&database).expect("JSON serialization failed!");
-            output.write_all(buf.as_bytes()).expect("Write failed");
+            let buf: String = serde_json::to_string(&database)?;
+            output.write_all(buf.as_bytes())?;
         }
 
         dump_all(
             api,
-            |page| {
-                tracing::info!(id = page.id.to_string(), title = page.title(), "Found Page");
-
-                let mut output =
-                    File::create("pages/".to_string() + &page.id.to_string() + ".json")
-                        .expect("File open failed!");
-
-                let buf: String = serde_json::to_string(&page).expect("JSON serialization failed!");
-                output.write_all(buf.as_bytes()).expect("Write failed");
-            },
             &database.id,
             DatabaseQuery {
                 sorts: None,
