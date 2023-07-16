@@ -7,11 +7,12 @@ use notion::NotionApi;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Serialize)]
 struct AutoConfig {
     api_token: Option<String>,
-    task_database_id: Option<DatabaseId>,
+    target: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -40,10 +41,10 @@ async fn main() -> Result<()> {
             )?,
     )?;
 
-    backup_all(&notion_api).await
+    backup_all(&notion_api, &config.target.unwrap_or(PathBuf::from(r"."))).await
 }
 
-async fn dump_page(api: &NotionApi, mut page: notion::models::Page) -> Result<()> {
+async fn dump_page(api: &NotionApi, pagepath: &Path, mut page: notion::models::Page) -> Result<()> {
     tracing::info!(id = page.id.to_string(), title = page.title(), "Found Page");
 
     let block_id: BlockId = BlockId::from(page.id.clone());
@@ -65,7 +66,7 @@ async fn dump_page(api: &NotionApi, mut page: notion::models::Page) -> Result<()
         }
     }
 
-    let mut output = File::create("pages/".to_string() + &page.id.to_string() + ".json")?;
+    let mut output = File::create(pagepath.join(page.id.to_string() + ".json"))?;
 
     let buf: String = serde_json::to_string(&page)?;
     output.write_all(buf.as_bytes())?;
@@ -73,14 +74,19 @@ async fn dump_page(api: &NotionApi, mut page: notion::models::Page) -> Result<()
     Ok(())
 }
 
-async fn dump_all<Q>(api: &NotionApi, database: &DatabaseId, query: Q) -> Result<()>
+async fn dump_all<Q>(
+    api: &NotionApi,
+    pagepath: &Path,
+    database: &DatabaseId,
+    query: Q,
+) -> Result<()>
 where
     Q: Into<DatabaseQuery>,
 {
     let mut q: DatabaseQuery = query.into();
     let mut pages = api.query_database(database, q.clone()).await?;
     for page in pages.results.into_iter() {
-        dump_page(api, page).await?;
+        dump_page(api, pagepath, page).await?;
     }
 
     while pages.has_more {
@@ -88,21 +94,29 @@ where
 
         pages = api.query_database(database, q.clone()).await?;
         for page in pages.results.into_iter() {
-            dump_page(api, page).await?;
+            dump_page(api, pagepath, page).await?;
         }
     }
 
     Ok(())
 }
 
-async fn backup_all(api: &NotionApi) -> Result<()> {
+async fn backup_all(api: &NotionApi, target: &Path) -> Result<()> {
     let databases = api
         .search(NotionSearch::filter_by_databases())
         .await?
         .only_databases();
 
-    std::fs::create_dir_all("databases/")?;
-    std::fs::create_dir_all("pages/")?;
+    let dbpath = target.join("databases");
+    let pagepath = target.join("pages");
+    tracing::info!(
+        DBPath = dbpath.to_str().unwrap(),
+        PagePath = pagepath.to_str().unwrap(),
+        "Creating directories..."
+    );
+
+    std::fs::create_dir_all(&dbpath)?;
+    std::fs::create_dir_all(&pagepath)?;
 
     for database in databases.results().iter() {
         let title = database.title_plain_text();
@@ -113,8 +127,7 @@ async fn backup_all(api: &NotionApi) -> Result<()> {
         );
 
         {
-            let mut output =
-                File::create("databases/".to_string() + &database.id.to_string() + ".json")?;
+            let mut output = File::create(dbpath.join(database.id.to_string() + ".json"))?;
 
             let buf: String = serde_json::to_string(&database)?;
             output.write_all(buf.as_bytes())?;
@@ -122,6 +135,7 @@ async fn backup_all(api: &NotionApi) -> Result<()> {
 
         dump_all(
             api,
+            &pagepath,
             &database.id,
             DatabaseQuery {
                 sorts: None,
