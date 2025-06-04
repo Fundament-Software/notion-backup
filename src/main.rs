@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use config::Config;
+use notion::NotionApi;
 use notion::ids::{BlockId, DatabaseId};
 use notion::models::paging::Pageable;
 use notion::models::search::{DatabaseQuery, NotionSearch};
-use notion::NotionApi;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;
